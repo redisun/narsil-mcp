@@ -442,19 +442,31 @@ narsil-mcp --repos ~/project --http --call-graph
 
 > **Full documentation:** See [docs/frontend.md](docs/frontend.md) for setup, API endpoints, and development mode.
 
-### Neural Semantic Search
+### Local ONNX & GPU Acceleration
 
-Find similar code using neural embeddings - even when variable names and structure differ.
+For maximum privacy and performance, narsil-mcp supports local ONNX models with optional GPU acceleration (CUDA).
 
 ```bash
-# Quick setup with wizard
-narsil-mcp config init --neural
+# Initialize local ONNX (will download all-MiniLM-L6-v2)
+narsil-mcp config init --neural # Select ONNX provider
 
-# Or manually with local ONNX (CPU/GPU)
+# Or run manually with GPU
 narsil-mcp --repos ~/project --neural --neural-backend onnx --neural-gpu
 ```
 
-Supports Voyage AI, OpenAI, custom endpoints, and local ONNX models with optional GPU acceleration.
+#### Linux GPU Setup (CUDA)
+
+On Linux, the MCP server might fail to find CUDA libraries when launched by an editor. Use the provided `gpu-launcher.sh` as a wrapper:
+
+1. Build the binary with CUDA support: `cargo build --release --features "neural-onnx cuda"`
+2. Add narsil-mcp to your editor using the launcher script instead of the raw binary:
+   - **Command:** `/path/to/narsil-mcp/gpu-launcher.sh`
+   - **Arguments:** `--repos /your/code --neural --neural-backend onnx --neural-gpu`
+
+**Caveats:**
+- **CUDA Versions:** Requires CUDA 12.x or 11.x depending on your `ort` build. If using pre-built binaries, ensure your system `libcuda.so` is compatible.
+- **Library Paths:** If you see "libcuda.so not found", adjust `LD_LIBRARY_PATH` in `gpu-launcher.sh` to point to your CUDA installation (e.g., `/usr/local/cuda-12.4/lib64`).
+- **Memory:** Large embedding models (e.g., 8B) require significant VRAM (8GB+). Default models like `all-MiniLM-L6-v2` are very lightweight (<100MB).
 
 > **Full documentation:** See [docs/neural-search.md](docs/neural-search.md) for setup, backends, and use cases.
 

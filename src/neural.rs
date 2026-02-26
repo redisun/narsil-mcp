@@ -269,46 +269,54 @@ pub mod onnx {
             if use_gpu {
                 #[cfg(feature = "cuda")]
                 {
-                    tracing::info!("Attempting to use CUDA execution provider");
-                    let provider = CUDAExecutionProvider::default().build();
-                    builder = builder.with_execution_providers([provider])?;
+                    tracing::info!("Attempting to register CUDA execution provider...");
+                    match CUDAExecutionProvider::default().build() {
+                        Ok(provider) => {
+                            match builder.with_execution_providers([provider]) {
+                                Ok(new_builder) => {
+                                    builder = new_builder;
+                                    tracing::info!("CUDA provider successfully registered");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to register CUDA provider (reverting to CPU): {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("CUDA execution provider not available (reverting to CPU): {}", e);
+                        }
+                    }
                 }
                 #[cfg(not(feature = "cuda"))]
                 {
-                    anyhow::bail!("GPU acceleration requested but binary built without CUDA support. Rebuild with --features cuda");
+                    tracing::warn!("GPU acceleration requested but binary built without CUDA support. Rebuild with --features cuda.");
+                    tracing::info!("Falling back to CPU execution.");
                 }
             }
 
-            let session = builder.commit_from_file(model_path)?;
-
-            // Detect dimension from model output shape
-            let dimension = session
-                .outputs
-                .iter()
-                .find(|o| {
-                    o.name == "last_hidden_state"
-                        || o.name == "output"
-                        || o.name == "sentence_embedding"
-                })
-                .or_else(|| session.outputs.first())
-                .and_then(|o| match &o.output_type {
-                    ort::value::ValueType::Tensor { dimensions, .. } => {
-                        dimensions.last().and_then(|d| d.as_fixed()).map(|v| v as usize)
-                    }
-                    _ => None,
-                })
-                .unwrap_or(768); // Fallback to 768 if detection fails
-
-            // GPU usage is verified during provider registration in the logs.
-            // If we reach this point with use_gpu=true and no registration error occurred, it is active.
-            if use_gpu {
-                tracing::info!(
-                    "ONNX session successfully initialized with GPU acceleration (dimension: {})",
-                    dimension
-                );
-            }
-
-            let tokenizer = Tokenizer::from_file(tokenizer_path)
+                        // Verify session creation and logging
+                        let session = builder.commit_from_file(model_path)?;
+            
+                        // Detect dimension from model output shape
+                        let dimension = session
+                            .outputs
+                            .iter()
+                            .find(|o| {
+                                o.name == "last_hidden_state"
+                                    || o.name == "output"
+                                    || o.name == "sentence_embedding"
+                            })
+                            .or_else(|| session.outputs.first())
+                            .and_then(|o| match &o.output_type {
+                                ort::value::ValueType::Tensor { dimensions, .. } => {
+                                    dimensions.last().and_then(|d| d.as_fixed()).map(|v| v as usize)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(768); // Fallback to 768 if detection fails
+            
+                        tracing::info!("ONNX session successfully initialized (dimension: {})", dimension);
+                        let tokenizer = Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
             Ok(Self {
