@@ -137,6 +137,18 @@ struct ServerArgs {
     #[arg(long)]
     neural_dimension: Option<usize>,
 
+    /// Path to ONNX model file (only for onnx backend)
+    #[arg(long)]
+    neural_model_path: Option<String>,
+
+    /// Path to tokenizer file (only for onnx backend)
+    #[arg(long)]
+    neural_tokenizer_path: Option<String>,
+
+    /// Enable GPU acceleration for neural embeddings (requires neural-onnx feature)
+    #[arg(long)]
+    neural_gpu: bool,
+
     /// Enable HTTP server for visualization frontend
     #[arg(long)]
     http: bool,
@@ -277,14 +289,24 @@ async fn main() -> Result<()> {
     }
 
     // Build neural config
+    let model_name = server_args.neural_model.clone().or_else(|| {
+        if server_args.neural_backend == "onnx" {
+            Some("all-MiniLM-L6-v2".to_string())
+        } else {
+            None
+        }
+    });
     let neural_dimension = server_args.neural_dimension.unwrap_or_else(|| {
-        neural::default_dimension_for_model(server_args.neural_model.as_deref())
+        neural::default_dimension_for_model(model_name.as_deref())
     });
     let neural_config = neural::NeuralConfig {
         enabled: server_args.neural,
         backend: server_args.neural_backend.clone(),
-        model_name: server_args.neural_model.clone(),
+        model_name,
+        model_path: server_args.neural_model_path.clone(),
+        tokenizer_path: server_args.neural_tokenizer_path.clone(),
         dimension: neural_dimension,
+        use_gpu: server_args.neural_gpu,
         ..Default::default()
     };
     if server_args.neural {
