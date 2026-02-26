@@ -5,22 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.2] - 2026-02-26
-
-### Added
-
-- **Local ONNX GPU Acceleration** - Added support for CUDA/CoreML acceleration in the ONNX neural backend via the `--neural-gpu` flag.
-- **Auto-downloading ONNX models** - The ONNX backend now automatically downloads and caches models (default: `all-MiniLM-L6-v2`) if no paths are provided.
-- **Gemini CLI Support** - Added full support for Gemini CLI as a first-class editor with automatic configuration detection and optimal "Full" preset.
-- **GPU Launcher Script** - Added `gpu-launcher.sh` utility for Linux to simplify CUDA environment setup and log capture.
-
-### Improved
-
-- **ONNX Model Compatibility** - Added support for FP16 (Float16) models and automatic `position_ids` generation, enabling compatibility with modern embedding models like Qwen and Llama.
-- **Robust ONNX Initialization** - Explicitly initialize the `ort` environment to prevent "DefaultLogger" errors on some Linux distributions with system-linked libraries.
-- **Neural Wizard Enhancements** - The interactive setup wizard now supports local ONNX configuration and GPU enablement.
-- **Generic Model Dimensions** - Improved auto-detection of embedding dimensions for 4B and 8B models.
-
 ## [1.6.1] - 2026-02-24
 
 ### Fixed
