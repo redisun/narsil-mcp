@@ -296,9 +296,9 @@ async fn main() -> Result<()> {
             None
         }
     });
-    let neural_dimension = server_args.neural_dimension.unwrap_or_else(|| {
-        neural::default_dimension_for_model(model_name.as_deref())
-    });
+    let neural_dimension = server_args
+        .neural_dimension
+        .unwrap_or_else(|| neural::default_dimension_for_model(model_name.as_deref()));
     let neural_config = neural::NeuralConfig {
         enabled: server_args.neural,
         backend: server_args.neural_backend.clone(),

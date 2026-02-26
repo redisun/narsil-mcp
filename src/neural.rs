@@ -235,14 +235,14 @@ pub trait EmbeddingBackend: Send + Sync {
 pub mod onnx {
     use super::*;
     use ndarray::Array2;
-    use ort::session::{builder::GraphOptimizationLevel, Session};
-    use ort::value::TensorRef;
     #[cfg(feature = "cuda")]
     use ort::execution_providers::CUDAExecutionProvider;
+    use ort::session::{builder::GraphOptimizationLevel, Session};
+    use ort::value::TensorRef;
 
+    use half::f16;
     use std::sync::Mutex;
     use tokenizers::Tokenizer;
-    use half::f16;
 
     /// ONNX-based local embedding model
     /// Uses Mutex for session because ort 2.0 requires &mut self for Session::run
@@ -256,11 +256,9 @@ pub mod onnx {
     impl OnnxEmbedder {
         /// Create a new ONNX embedder from model and tokenizer paths
         pub fn new(model_path: &Path, tokenizer_path: &Path, use_gpu: bool) -> Result<Self> {
-            // Explicitly initialize the environment with a logger to fix the "DefaultLogger" error 
+            // Explicitly initialize the environment with a logger to fix the "DefaultLogger" error
             // observed on some Linux distributions with system-linked libraries.
-            let _ = ort::init()
-                .with_name("narsil-mcp")
-                .commit();
+            let _ = ort::init().with_name("narsil-mcp").commit();
 
             let mut builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
@@ -271,19 +269,23 @@ pub mod onnx {
                 {
                     tracing::info!("Attempting to register CUDA execution provider...");
                     match CUDAExecutionProvider::default().build() {
-                        Ok(provider) => {
-                            match builder.with_execution_providers([provider]) {
-                                Ok(new_builder) => {
-                                    builder = new_builder;
-                                    tracing::info!("CUDA provider successfully registered");
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to register CUDA provider (reverting to CPU): {}", e);
-                                }
+                        Ok(provider) => match builder.with_execution_providers([provider]) {
+                            Ok(new_builder) => {
+                                builder = new_builder;
+                                tracing::info!("CUDA provider successfully registered");
                             }
-                        }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to register CUDA provider (reverting to CPU): {}",
+                                    e
+                                );
+                            }
+                        },
                         Err(e) => {
-                            tracing::warn!("CUDA execution provider not available (reverting to CPU): {}", e);
+                            tracing::warn!(
+                                "CUDA execution provider not available (reverting to CPU): {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -294,29 +296,33 @@ pub mod onnx {
                 }
             }
 
-                        // Verify session creation and logging
-                        let session = builder.commit_from_file(model_path)?;
-            
-                        // Detect dimension from model output shape
-                        let dimension = session
-                            .outputs
-                            .iter()
-                            .find(|o| {
-                                o.name == "last_hidden_state"
-                                    || o.name == "output"
-                                    || o.name == "sentence_embedding"
-                            })
-                            .or_else(|| session.outputs.first())
-                            .and_then(|o| match &o.output_type {
-                                ort::value::ValueType::Tensor { dimensions, .. } => {
-                                    dimensions.last().and_then(|d| d.as_fixed()).map(|v| v as usize)
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or(768); // Fallback to 768 if detection fails
-            
-                        tracing::info!("ONNX session successfully initialized (dimension: {})", dimension);
-                        let tokenizer = Tokenizer::from_file(tokenizer_path)
+            // Verify session creation and logging
+            let session = builder.commit_from_file(model_path)?;
+
+            // Detect dimension from model output shape
+            let dimension = session
+                .outputs
+                .iter()
+                .find(|o| {
+                    o.name == "last_hidden_state"
+                        || o.name == "output"
+                        || o.name == "sentence_embedding"
+                })
+                .or_else(|| session.outputs.first())
+                .and_then(|o| match &o.output_type {
+                    ort::value::ValueType::Tensor { dimensions, .. } => dimensions
+                        .last()
+                        .and_then(|d| d.as_fixed())
+                        .map(|v| v as usize),
+                    _ => None,
+                })
+                .unwrap_or(768); // Fallback to 768 if detection fails
+
+            tracing::info!(
+                "ONNX session successfully initialized (dimension: {})",
+                dimension
+            );
+            let tokenizer = Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
             Ok(Self {
@@ -426,7 +432,7 @@ pub mod onnx {
 
             // Check if model requires position_ids by inspecting session inputs
             let input_names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
-            
+
             let outputs = if input_names.iter().any(|n| n == "position_ids") {
                 session.run(ort::inputs![
                     "input_ids" => input_ids_tensor,
@@ -449,19 +455,17 @@ pub mod onnx {
             // ort 2.0: try_extract_tensor returns (Shape, &[T])
             // Support both f32 and f16 (FP16) outputs
             let embeddings: Vec<f32> = match output.dtype() {
-                ort::value::ValueType::Tensor { ty, .. } => {
-                    match ty {
-                        ort::tensor::TensorElementType::Float32 => {
-                            let (_, data) = output.try_extract_tensor::<f32>()?;
-                            data.to_vec()
-                        }
-                        ort::tensor::TensorElementType::Float16 => {
-                            let (_, data) = output.try_extract_tensor::<f16>()?;
-                            data.iter().map(|&x| x.to_f32()).collect()
-                        }
-                        _ => anyhow::bail!("Unsupported output tensor type: {:?}", ty),
+                ort::value::ValueType::Tensor { ty, .. } => match ty {
+                    ort::tensor::TensorElementType::Float32 => {
+                        let (_, data) = output.try_extract_tensor::<f32>()?;
+                        data.to_vec()
                     }
-                }
+                    ort::tensor::TensorElementType::Float16 => {
+                        let (_, data) = output.try_extract_tensor::<f16>()?;
+                        data.iter().map(|&x| x.to_f32()).collect()
+                    }
+                    _ => anyhow::bail!("Unsupported output tensor type: {:?}", ty),
+                },
                 _ => anyhow::bail!("Output is not a tensor: {:?}", output.dtype()),
             };
 
@@ -1054,36 +1058,37 @@ impl NeuralEngine {
     /// Create a new neural engine with ONNX backend (requires neural-onnx feature)
     #[cfg(feature = "neural-onnx")]
     pub fn with_onnx(config: NeuralConfig) -> Result<Self> {
-        let backend: Arc<dyn EmbeddingBackend> = if let (Some(m_path), Some(t_path)) =
-            (&config.model_path, &config.tokenizer_path)
-        {
-            Arc::new(onnx::OnnxEmbedder::new(
-                Path::new(m_path),
-                Path::new(t_path),
-                config.use_gpu,
-            )?)
-        } else {
-            // Use default model and cache directory if paths are not provided
-            let model_name = config.model_name.as_deref().unwrap_or("all-MiniLM-L6-v2");
-
-            let cache_dir = if let Some(proj_dirs) =
-                directories::ProjectDirs::from("com", "anthropic", "narsil-mcp")
-            {
-                proj_dirs.cache_dir().join("models")
+        let backend: Arc<dyn EmbeddingBackend> =
+            if let (Some(m_path), Some(t_path)) = (&config.model_path, &config.tokenizer_path) {
+                Arc::new(onnx::OnnxEmbedder::new(
+                    Path::new(m_path),
+                    Path::new(t_path),
+                    config.use_gpu,
+                )?)
             } else {
-                // Fallback to home directory
-                #[allow(deprecated)]
-                std::env::home_dir()
-                    .context("Could not determine home directory")?
-                    .join(".cache")
-                    .join("narsil-mcp")
-                    .join("models")
-            };
+                // Use default model and cache directory if paths are not provided
+                let model_name = config.model_name.as_deref().unwrap_or("all-MiniLM-L6-v2");
 
-            Arc::new(onnx::OnnxEmbedder::from_pretrained(
-                model_name, &cache_dir, config.use_gpu,
-            )?)
-        };
+                let cache_dir = if let Some(proj_dirs) =
+                    directories::ProjectDirs::from("com", "anthropic", "narsil-mcp")
+                {
+                    proj_dirs.cache_dir().join("models")
+                } else {
+                    // Fallback to home directory
+                    #[allow(deprecated)]
+                    std::env::home_dir()
+                        .context("Could not determine home directory")?
+                        .join(".cache")
+                        .join("narsil-mcp")
+                        .join("models")
+                };
+
+                Arc::new(onnx::OnnxEmbedder::from_pretrained(
+                    model_name,
+                    &cache_dir,
+                    config.use_gpu,
+                )?)
+            };
 
         let store = SimpleVectorStore::new(config.dimension);
 

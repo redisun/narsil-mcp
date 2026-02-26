@@ -395,7 +395,9 @@ impl NeuralWizard {
 
     pub fn get_config_key_for_editor(editor_type: EditorType) -> &'static str {
         match editor_type {
-            EditorType::ClaudeDesktop | EditorType::ClaudeCode | EditorType::GeminiCLI => "mcpServers",
+            EditorType::ClaudeDesktop | EditorType::ClaudeCode | EditorType::GeminiCLI => {
+                "mcpServers"
+            }
             EditorType::Zed => "context_servers",
             EditorType::VSCode | EditorType::JetBrains => "servers",
         }
