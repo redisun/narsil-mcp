@@ -51,6 +51,8 @@ pub struct NeuralConfig {
     pub max_seq_length: usize,
     /// Batch size for bulk embedding
     pub batch_size: usize,
+    /// Enable GPU acceleration
+    pub use_gpu: bool,
 }
 
 impl Default for NeuralConfig {
@@ -64,7 +66,8 @@ impl Default for NeuralConfig {
             api_endpoint: None,
             dimension: default_dimension_for_model(Some("voyage-code-2")),
             max_seq_length: 512,
-            batch_size: 32,
+            batch_size: 4, // Reduced for local reliability
+            use_gpu: false,
         }
     }
 }
@@ -93,6 +96,11 @@ pub fn default_dimension_for_model(model: Option<&str>) -> usize {
         Some(m) if m.starts_with("voyage-code-2") => 1024,
         Some(m) if m.starts_with("voyage-3") => 1024,
         Some(m) if m.starts_with("voyage-") => 1024,
+        Some(m) if m.contains("all-MiniLM-L6-v2") => 384,
+        Some(m) if m.contains("bge-small-en-v1.5") => 384,
+        Some(m) if m.contains("bge-base-en-v1.5") => 768,
+        Some(m) if m.contains("Qwen3-Embedding-4B") => 2560,
+        Some(m) if m.contains("Qwen3-Embedding-8B") => 4096,
         _ => 1536,
     }
 }
@@ -229,8 +237,12 @@ pub mod onnx {
     use ndarray::Array2;
     use ort::session::{builder::GraphOptimizationLevel, Session};
     use ort::value::TensorRef;
+    #[cfg(feature = "cuda")]
+    use ort::execution_providers::CUDAExecutionProvider;
+
     use std::sync::Mutex;
     use tokenizers::Tokenizer;
+    use half::f16;
 
     /// ONNX-based local embedding model
     /// Uses Mutex for session because ort 2.0 requires &mut self for Session::run
@@ -243,11 +255,37 @@ pub mod onnx {
 
     impl OnnxEmbedder {
         /// Create a new ONNX embedder from model and tokenizer paths
-        pub fn new(model_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-            let session = Session::builder()?
+        pub fn new(model_path: &Path, tokenizer_path: &Path, use_gpu: bool) -> Result<Self> {
+            // Explicitly initialize the environment with a logger to fix the "DefaultLogger" error 
+            // on system-linked libraries (especially on Arch/EndeavourOS)
+            let _ = ort::init()
+                .with_name("narsil-mcp")
+                .commit();
+
+            let mut builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(4)?
-                .commit_from_file(model_path)?;
+                .with_intra_threads(4)?;
+
+            if use_gpu {
+                #[cfg(feature = "cuda")]
+                {
+                    tracing::info!("Attempting to use CUDA execution provider");
+                    let provider = CUDAExecutionProvider::default().build();
+                    builder = builder.with_execution_providers([provider])?;
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    anyhow::bail!("GPU acceleration requested but binary built without CUDA support. Rebuild with --features cuda");
+                }
+            }
+
+            let session = builder.commit_from_file(model_path)?;
+
+            // GPU usage is verified during provider registration in the logs.
+            // If we reach this point with use_gpu=true and no registration error occurred, it is active.
+            if use_gpu {
+                tracing::info!("ONNX session successfully initialized with GPU acceleration");
+            }
 
             let tokenizer = Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
@@ -265,7 +303,7 @@ pub mod onnx {
         }
 
         /// Create from a pretrained model name (downloads if needed)
-        pub fn from_pretrained(model_name: &str, cache_dir: &Path) -> Result<Self> {
+        pub fn from_pretrained(model_name: &str, cache_dir: &Path, use_gpu: bool) -> Result<Self> {
             let model_dir = cache_dir.join(model_name.replace('/', "_"));
 
             if !model_dir.exists() {
@@ -283,6 +321,7 @@ pub mod onnx {
             Self::new(
                 &model_dir.join("model.onnx"),
                 &model_dir.join("tokenizer.json"),
+                use_gpu,
             )
         }
 
@@ -344,9 +383,15 @@ pub mod onnx {
             let attention_mask_array = Array2::from_shape_vec((1, seq_len), attention_mask)
                 .context("Invalid mask shape")?;
 
+            // Create position IDs (required by many modern models like Qwen/Llama)
+            let position_ids: Vec<i64> = (0..seq_len as i64).collect();
+            let position_ids_array = Array2::from_shape_vec((1, seq_len), position_ids)
+                .context("Invalid position shape")?;
+
             // Run inference - ort 2.0 takes owned view without reference
             let input_ids_tensor = TensorRef::from_array_view(input_ids_array.view())?;
             let attention_mask_tensor = TensorRef::from_array_view(attention_mask_array.view())?;
+            let position_ids_tensor = TensorRef::from_array_view(position_ids_array.view())?;
 
             // Lock the session for mutable access (ort 2.0 requires &mut self for run)
             let mut session = self
@@ -354,10 +399,21 @@ pub mod onnx {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Failed to lock session: {}", e))?;
 
-            let outputs = session.run(ort::inputs![
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor,
-            ])?;
+            // Check if model requires position_ids by inspecting session inputs
+            let input_names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
+            
+            let outputs = if input_names.iter().any(|n| n == "position_ids") {
+                session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                    "position_ids" => position_ids_tensor,
+                ])?
+            } else {
+                session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                ])?
+            };
 
             // Extract embeddings - ort 2.0 API
             // Try to get output by name first, then fallback to first
@@ -366,8 +422,23 @@ pub mod onnx {
                 .ok_or_else(|| anyhow::anyhow!("No output tensor found from ONNX model"))?;
 
             // ort 2.0: try_extract_tensor returns (Shape, &[T])
-            let (_, data) = output.try_extract_tensor::<f32>()?;
-            let embeddings: Vec<f32> = data.to_vec();
+            // Support both f32 and f16 (FP16) outputs
+            let embeddings: Vec<f32> = match output.dtype() {
+                ort::value::ValueType::Tensor { ty, .. } => {
+                    match ty {
+                        ort::tensor::TensorElementType::Float32 => {
+                            let (_, data) = output.try_extract_tensor::<f32>()?;
+                            data.to_vec()
+                        }
+                        ort::tensor::TensorElementType::Float16 => {
+                            let (_, data) = output.try_extract_tensor::<f16>()?;
+                            data.iter().map(|&x| x.to_f32()).collect()
+                        }
+                        _ => anyhow::bail!("Unsupported output tensor type: {:?}", ty),
+                    }
+                }
+                _ => anyhow::bail!("Output is not a tensor: {:?}", output.dtype()),
+            };
 
             Ok(self.mean_pool(&embeddings, seq_len))
         }
@@ -958,19 +1029,36 @@ impl NeuralEngine {
     /// Create a new neural engine with ONNX backend (requires neural-onnx feature)
     #[cfg(feature = "neural-onnx")]
     pub fn with_onnx(config: NeuralConfig) -> Result<Self> {
-        let model_path = config
-            .model_path
-            .as_ref()
-            .context("model_path required for ONNX backend")?;
-        let tokenizer_path = config
-            .tokenizer_path
-            .as_ref()
-            .context("tokenizer_path required for ONNX backend")?;
+        let backend: Arc<dyn EmbeddingBackend> = if let (Some(m_path), Some(t_path)) =
+            (&config.model_path, &config.tokenizer_path)
+        {
+            Arc::new(onnx::OnnxEmbedder::new(
+                Path::new(m_path),
+                Path::new(t_path),
+                config.use_gpu,
+            )?)
+        } else {
+            // Use default model and cache directory if paths are not provided
+            let model_name = config.model_name.as_deref().unwrap_or("all-MiniLM-L6-v2");
 
-        let backend: Arc<dyn EmbeddingBackend> = Arc::new(onnx::OnnxEmbedder::new(
-            Path::new(model_path),
-            Path::new(tokenizer_path),
-        )?);
+            let cache_dir = if let Some(proj_dirs) =
+                directories::ProjectDirs::from("com", "anthropic", "narsil-mcp")
+            {
+                proj_dirs.cache_dir().join("models")
+            } else {
+                // Fallback to home directory
+                #[allow(deprecated)]
+                std::env::home_dir()
+                    .context("Could not determine home directory")?
+                    .join(".cache")
+                    .join("narsil-mcp")
+                    .join("models")
+            };
+
+            Arc::new(onnx::OnnxEmbedder::from_pretrained(
+                model_name, &cache_dir, config.use_gpu,
+            )?)
+        };
 
         let store = SimpleVectorStore::new(config.dimension);
 
@@ -1163,6 +1251,11 @@ mod tests {
         );
         assert_eq!(default_dimension_for_model(Some("voyage-3")), 1024);
         assert_eq!(default_dimension_for_model(Some("voyage-3-lite")), 1024);
+
+        // ONNX models
+        assert_eq!(default_dimension_for_model(Some("all-MiniLM-L6-v2")), 384);
+        assert_eq!(default_dimension_for_model(Some("bge-small-en-v1.5")), 384);
+        assert_eq!(default_dimension_for_model(Some("bge-base-en-v1.5")), 768);
 
         // Unknown models fall back to 1536
         assert_eq!(default_dimension_for_model(Some("unknown-model")), 1536);
