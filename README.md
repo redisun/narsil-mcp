@@ -311,6 +311,7 @@ narsil-mcp detects your editor and applies an optimal preset automatically:
 |--------|--------|-------|----------------|-----|
 | **Zed** | Minimal | 26 | ~4,686 | Fast startup, minimal context |
 | **VS Code** | Balanced | 51 | ~8,948 | Good feature balance |
+| **Gemini CLI** | Full | 75+ | ~12,001 | Maximum capabilities |
 | **Claude Desktop** | Full | 75+ | ~12,001 | Maximum capabilities |
 
 **Token Savings:**
@@ -449,12 +450,11 @@ Find similar code using neural embeddings - even when variable names and structu
 # Quick setup with wizard
 narsil-mcp config init --neural
 
-# Or manually with Voyage AI
-export VOYAGE_API_KEY="your-key"
-narsil-mcp --repos ~/project --neural --neural-model voyage-code-2
+# Or manually with local ONNX (CPU/GPU)
+narsil-mcp --repos ~/project --neural --neural-backend onnx --neural-gpu
 ```
 
-Supports Voyage AI, OpenAI, custom endpoints, and local ONNX models.
+Supports Voyage AI, OpenAI, custom endpoints, and local ONNX models with optional GPU acceleration.
 
 > **Full documentation:** See [docs/neural-search.md](docs/neural-search.md) for setup, backends, and use cases.
 

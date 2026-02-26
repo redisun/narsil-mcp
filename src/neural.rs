@@ -99,8 +99,8 @@ pub fn default_dimension_for_model(model: Option<&str>) -> usize {
         Some(m) if m.contains("all-MiniLM-L6-v2") => 384,
         Some(m) if m.contains("bge-small-en-v1.5") => 384,
         Some(m) if m.contains("bge-base-en-v1.5") => 768,
-        Some(m) if m.contains("Qwen3-Embedding-4B") => 2560,
-        Some(m) if m.contains("Qwen3-Embedding-8B") => 4096,
+        Some(m) if m.contains("4B") => 2560, // Standard dimension for 4B models (e.g., Qwen)
+        Some(m) if m.contains("8B") => 4096, // Standard dimension for 8B models (e.g., Qwen, Llama)
         _ => 1536,
     }
 }
@@ -257,7 +257,7 @@ pub mod onnx {
         /// Create a new ONNX embedder from model and tokenizer paths
         pub fn new(model_path: &Path, tokenizer_path: &Path, use_gpu: bool) -> Result<Self> {
             // Explicitly initialize the environment with a logger to fix the "DefaultLogger" error 
-            // on system-linked libraries (especially on Arch/EndeavourOS)
+            // observed on some Linux distributions with system-linked libraries.
             let _ = ort::init()
                 .with_name("narsil-mcp")
                 .commit();
@@ -281,18 +281,35 @@ pub mod onnx {
 
             let session = builder.commit_from_file(model_path)?;
 
+            // Detect dimension from model output shape
+            let dimension = session
+                .outputs
+                .iter()
+                .find(|o| {
+                    o.name == "last_hidden_state"
+                        || o.name == "output"
+                        || o.name == "sentence_embedding"
+                })
+                .or_else(|| session.outputs.first())
+                .and_then(|o| match &o.output_type {
+                    ort::value::ValueType::Tensor { dimensions, .. } => {
+                        dimensions.last().and_then(|d| d.as_fixed()).map(|v| v as usize)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(768); // Fallback to 768 if detection fails
+
             // GPU usage is verified during provider registration in the logs.
             // If we reach this point with use_gpu=true and no registration error occurred, it is active.
             if use_gpu {
-                tracing::info!("ONNX session successfully initialized with GPU acceleration");
+                tracing::info!(
+                    "ONNX session successfully initialized with GPU acceleration (dimension: {})",
+                    dimension
+                );
             }
 
             let tokenizer = Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
-
-            // Detect dimension from model output shape
-            // Note: ort 2.0 removed tensor_dimensions(), use default dimension
-            let dimension: usize = 768;
 
             Ok(Self {
                 session: Mutex::new(session),
