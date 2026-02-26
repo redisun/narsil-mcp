@@ -10,6 +10,7 @@ use std::path::PathBuf;
 pub enum EditorType {
     ClaudeDesktop,
     ClaudeCode,
+    GeminiCLI,
     Zed,
     VSCode,
     JetBrains,
@@ -20,6 +21,7 @@ impl fmt::Display for EditorType {
         match self {
             EditorType::ClaudeDesktop => write!(f, "Claude Desktop"),
             EditorType::ClaudeCode => write!(f, "Claude Code"),
+            EditorType::GeminiCLI => write!(f, "Gemini CLI"),
             EditorType::Zed => write!(f, "Zed"),
             EditorType::VSCode => write!(f, "VS Code"),
             EditorType::JetBrains => write!(f, "JetBrains IDEs"),
@@ -39,6 +41,7 @@ pub fn get_editor_config_path(editor: EditorType) -> PathBuf {
     match editor {
         EditorType::ClaudeDesktop => get_claude_desktop_config_path(),
         EditorType::ClaudeCode => get_claude_code_config_path(),
+        EditorType::GeminiCLI => get_gemini_cli_config_path(),
         EditorType::Zed => get_zed_config_path(),
         EditorType::VSCode => get_vscode_config_path(),
         EditorType::JetBrains => get_jetbrains_config_path(),
@@ -52,6 +55,7 @@ pub fn detect_available_editors() -> Vec<EditorConfig> {
     for editor_type in [
         EditorType::ClaudeDesktop,
         EditorType::ClaudeCode,
+        EditorType::GeminiCLI,
         EditorType::Zed,
         EditorType::VSCode,
         EditorType::JetBrains,
@@ -67,6 +71,14 @@ pub fn detect_available_editors() -> Vec<EditorConfig> {
     }
 
     editors
+}
+
+fn get_gemini_cli_config_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        PathBuf::from(home).join(".gemini").join("settings.json")
+    } else {
+        PathBuf::from("settings.json")
+    }
 }
 
 fn get_claude_desktop_config_path() -> PathBuf {
@@ -186,6 +198,9 @@ pub fn get_editor_preset(editor_name: &str) -> Option<Preset> {
         // Claude Desktop - full capabilities
         "claude-desktop" | "claude" | "claude.ai" => Some(Preset::Full),
 
+        // Gemini CLI - full capabilities
+        "gemini-cli" | "gemini" | "gemini-code" => Some(Preset::Full),
+
         // JetBrains IDEs - balanced
         "intellij" | "idea" | "pycharm" | "webstorm" | "rustrover" | "clion" | "goland"
         | "phpstorm" | "rider" => Some(Preset::Balanced),
@@ -260,6 +275,13 @@ mod tests {
         assert_eq!(get_editor_preset("claude-desktop"), Some(Preset::Full));
         assert_eq!(get_editor_preset("claude"), Some(Preset::Full));
         assert_eq!(get_editor_preset("claude.ai"), Some(Preset::Full));
+    }
+
+    #[test]
+    fn test_gemini_detection() {
+        assert_eq!(get_editor_preset("gemini-cli"), Some(Preset::Full));
+        assert_eq!(get_editor_preset("gemini"), Some(Preset::Full));
+        assert_eq!(get_editor_preset("gemini-code"), Some(Preset::Full));
     }
 
     #[test]

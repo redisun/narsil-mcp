@@ -37,6 +37,13 @@ fn test_claude_code_path() {
 }
 
 #[test]
+fn test_gemini_cli_path() {
+    let path = get_editor_config_path(EditorType::GeminiCLI);
+    assert!(path.to_string_lossy().contains(".gemini"));
+    assert!(path.to_string_lossy().ends_with("settings.json"));
+}
+
+#[test]
 fn test_zed_macos_path() {
     #[cfg(target_os = "macos")]
     {
@@ -74,6 +81,7 @@ fn test_jetbrains_workspace_path() {
 fn test_editor_type_display() {
     assert_eq!(EditorType::ClaudeDesktop.to_string(), "Claude Desktop");
     assert_eq!(EditorType::ClaudeCode.to_string(), "Claude Code");
+    assert_eq!(EditorType::GeminiCLI.to_string(), "Gemini CLI");
     assert_eq!(EditorType::Zed.to_string(), "Zed");
     assert_eq!(EditorType::VSCode.to_string(), "VS Code");
     assert_eq!(EditorType::JetBrains.to_string(), "JetBrains IDEs");
@@ -85,7 +93,7 @@ fn test_detect_available_editors_none() {
     let editors = detect_available_editors();
     // Should return empty or only editors with existing config files
     // This test will vary by environment
-    assert!(editors.len() <= 5);
+    assert!(editors.len() <= 6);
 }
 
 #[cfg(test)]
