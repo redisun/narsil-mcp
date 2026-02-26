@@ -10,6 +10,7 @@ use super::editor::{detect_available_editors, EditorConfig, EditorType};
 pub enum ApiProvider {
     Voyage,
     OpenAI,
+    Onnx,
     Custom,
 }
 
@@ -18,16 +19,18 @@ impl ApiProvider {
         match s.to_lowercase().as_str() {
             "voyage" | "1" => Some(ApiProvider::Voyage),
             "openai" | "2" => Some(ApiProvider::OpenAI),
-            "custom" | "3" => Some(ApiProvider::Custom),
+            "onnx" | "3" => Some(ApiProvider::Onnx),
+            "custom" | "4" => Some(ApiProvider::Custom),
             _ => None,
         }
     }
 
-    pub fn env_var_name(&self) -> &'static str {
+    pub fn env_var_name(&self) -> Option<&'static str> {
         match self {
-            ApiProvider::Voyage => "VOYAGE_API_KEY",
-            ApiProvider::OpenAI => "OPENAI_API_KEY",
-            ApiProvider::Custom => "EMBEDDING_API_KEY",
+            ApiProvider::Voyage => Some("VOYAGE_API_KEY"),
+            ApiProvider::OpenAI => Some("OPENAI_API_KEY"),
+            ApiProvider::Onnx => None,
+            ApiProvider::Custom => Some("EMBEDDING_API_KEY"),
         }
     }
 
@@ -35,6 +38,7 @@ impl ApiProvider {
         match self {
             ApiProvider::Voyage => "Voyage AI",
             ApiProvider::OpenAI => "OpenAI",
+            ApiProvider::Onnx => "Local ONNX (No API key needed)",
             ApiProvider::Custom => "Custom Endpoint",
         }
     }
@@ -88,53 +92,71 @@ impl NeuralWizard {
         println!("\nSelect your embedding provider:\n");
         println!("  1. Voyage AI (recommended for code, voyage-code-2)");
         println!("  2. OpenAI (text-embedding-3-small or ada-002)");
-        println!("  3. Custom endpoint (self-hosted or other provider)\n");
+        println!("  3. Local ONNX (no API key needed, CPU or GPU)");
+        println!("  4. Custom endpoint (self-hosted or other provider)\n");
 
         let provider = self.prompt_for_provider()?;
 
-        // Step 4: Get API key
-        println!("\nEnter your {} API key:", provider.display_name());
-        println!("(The key will be stored in your editor's config file)\n");
+        let api_key = if provider != ApiProvider::Onnx {
+            // Step 4: Get API key
+            println!("\nEnter your {} API key:", provider.display_name());
+            println!("(The key will be stored in your editor's config file)\n");
 
-        let api_key = self.prompt_for_api_key(provider)?;
+            let key = self.prompt_for_api_key(provider)?;
 
-        // Step 5: Validate key (optional, can be slow)
-        println!("\nValidate API key? (y/n) [y]: ");
-        io::stdout().flush()?;
-        let mut validate = String::new();
-        io::stdin().read_line(&mut validate)?;
-        let validate = validate.trim().is_empty() || validate.trim().to_lowercase() == "y";
-
-        if validate {
-            print!("Validating API key... ");
+            // Step 5: Validate key (optional, can be slow)
+            println!("\nValidate API key? (y/n) [y]: ");
             io::stdout().flush()?;
-            match self.validate_api_key(&api_key, provider).await {
-                Ok(_) => println!("✅ Valid!"),
-                Err(e) => {
-                    println!("❌ Failed: {}", e);
-                    println!("Continue anyway? (y/n) [n]: ");
-                    io::stdout().flush()?;
-                    let mut cont = String::new();
-                    io::stdin().read_line(&mut cont)?;
-                    if cont.trim().to_lowercase() != "y" {
-                        return Ok(());
+            let mut validate = String::new();
+            io::stdin().read_line(&mut validate)?;
+            let validate = validate.trim().is_empty() || validate.trim().to_lowercase() == "y";
+
+            if validate {
+                print!("Validating API key... ");
+                io::stdout().flush()?;
+                match self.validate_api_key(&key, provider).await {
+                    Ok(_) => println!("✅ Valid!"),
+                    Err(e) => {
+                        println!("❌ Failed: {}", e);
+                        println!("Continue anyway? (y/n) [n]: ");
+                        io::stdout().flush()?;
+                        let mut cont = String::new();
+                        io::stdin().read_line(&mut cont)?;
+                        if cont.trim().to_lowercase() != "y" {
+                            return Ok(());
+                        }
                     }
                 }
             }
-        }
+            Some(key)
+        } else {
+            None
+        };
 
         // Step 6: Add to editor config
-        println!(
-            "\nAdding API key to {}...",
-            selected_editor.config_path.display()
-        );
+        if let Some(key) = &api_key {
+            println!(
+                "\nAdding API key to {}...",
+                selected_editor.config_path.display()
+            );
+            let env_var = provider.env_var_name().unwrap_or("EMBEDDING_API_KEY");
+            self.add_to_editor_config(&selected_editor.config_path, env_var, key)
+                .await?;
+        } else {
+            println!("\nEnable GPU acceleration (CUDA/CoreML)? (y/n) [n]: ");
+            io::stdout().flush()?;
+            let mut gpu = String::new();
+            io::stdin().read_line(&mut gpu)?;
+            let use_gpu = gpu.trim().to_lowercase() == "y";
 
-        self.add_to_editor_config(
-            &selected_editor.config_path,
-            provider.env_var_name(),
-            &api_key,
-        )
-        .await?;
+            println!(
+                "\nConfiguring ONNX backend (GPU={}) in {}...",
+                use_gpu,
+                selected_editor.config_path.display()
+            );
+            self.add_onnx_to_editor_config(&selected_editor.config_path, use_gpu)
+                .await?;
+        }
 
         println!("\n✅ Success! Neural embeddings are now configured.");
         println!("\nNext steps:");
@@ -161,7 +183,7 @@ impl NeuralWizard {
     }
 
     fn prompt_for_provider(&self) -> Result<ApiProvider> {
-        print!("Select provider (1-3): ");
+        print!("Select provider (1-4): ");
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -195,6 +217,7 @@ impl NeuralWizard {
         match provider {
             ApiProvider::Voyage => key.starts_with("pa-") && key.len() > 10,
             ApiProvider::OpenAI => key.starts_with("sk-") && key.len() > 10,
+            ApiProvider::Onnx => true,
             ApiProvider::Custom => !key.is_empty(),
         }
     }
@@ -255,6 +278,84 @@ impl NeuralWizard {
         Ok(())
     }
 
+    pub async fn add_onnx_to_editor_config(&self, config_path: &Path, use_gpu: bool) -> Result<()> {
+        // Create parent directories if needed
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Read existing config or create new
+        let mut config: Value = if config_path.exists() {
+            let content = fs::read_to_string(config_path).context("Failed to read config file")?;
+            serde_json::from_str(&content).context("Failed to parse existing config as JSON")?
+        } else {
+            json!({})
+        };
+
+        // Determine the config key based on editor type
+        let editor_type = self.detect_editor_type(config_path)?;
+        let server_key = Self::get_config_key_for_editor(editor_type);
+
+        // Ensure the server entry exists
+        if config.get(server_key).is_none() {
+            config[server_key] = json!({});
+        }
+
+        // Ensure narsil-mcp server exists
+        if config[server_key].get("narsil-mcp").is_none() {
+            let mut args = vec![
+                json!("--repos"),
+                json!("."),
+                json!("--neural"),
+                json!("--neural-backend"),
+                json!("onnx"),
+            ];
+            if use_gpu {
+                args.push(json!("--neural-gpu"));
+            }
+            config[server_key]["narsil-mcp"] = json!({
+                "command": "narsil-mcp",
+                "args": args
+            });
+        } else {
+            // Update args to include ONNX backend
+            let mut args = config[server_key]["narsil-mcp"]
+                .get("args")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            if !args.contains(&json!("--neural")) {
+                args.push(json!("--neural"));
+            }
+            if !args.contains(&json!("--neural-backend")) {
+                args.push(json!("--neural-backend"));
+                args.push(json!("onnx"));
+            } else {
+                // Find and update backend if it exists
+                if let Some(pos) = args.iter().position(|r| r == "--neural-backend") {
+                    if pos + 1 < args.len() {
+                        args[pos + 1] = json!("onnx");
+                    }
+                }
+            }
+
+            if use_gpu && !args.contains(&json!("--neural-gpu")) {
+                args.push(json!("--neural-gpu"));
+            } else if !use_gpu {
+                args.retain(|a| a != "--neural-gpu");
+            }
+
+            config[server_key]["narsil-mcp"]["args"] = json!(args);
+        }
+
+        // Write back
+        let pretty = serde_json::to_string_pretty(&config)?;
+        fs::write(config_path, pretty)?;
+
+        Ok(())
+    }
+
     fn detect_editor_type(&self, config_path: &Path) -> Result<EditorType> {
         let path_str = config_path.to_string_lossy();
         let filename = config_path
@@ -267,6 +368,8 @@ impl NeuralWizard {
             Ok(EditorType::ClaudeDesktop)
         } else if filename == "claude_code_config.json" {
             Ok(EditorType::ClaudeCode)
+        } else if filename == "settings.json" && path_str.contains(".gemini") {
+            Ok(EditorType::GeminiCLI)
         } else if filename == "settings.json" && path_str.contains("zed") {
             Ok(EditorType::Zed)
         } else if filename == "settings.json" {
@@ -292,7 +395,7 @@ impl NeuralWizard {
 
     pub fn get_config_key_for_editor(editor_type: EditorType) -> &'static str {
         match editor_type {
-            EditorType::ClaudeDesktop | EditorType::ClaudeCode => "mcpServers",
+            EditorType::ClaudeDesktop | EditorType::ClaudeCode | EditorType::GeminiCLI => "mcpServers",
             EditorType::Zed => "context_servers",
             EditorType::VSCode | EditorType::JetBrains => "servers",
         }
@@ -309,15 +412,22 @@ mod tests {
         assert_eq!(ApiProvider::parse("1"), Some(ApiProvider::Voyage));
         assert_eq!(ApiProvider::parse("openai"), Some(ApiProvider::OpenAI));
         assert_eq!(ApiProvider::parse("2"), Some(ApiProvider::OpenAI));
+        assert_eq!(ApiProvider::parse("onnx"), Some(ApiProvider::Onnx));
+        assert_eq!(ApiProvider::parse("3"), Some(ApiProvider::Onnx));
         assert_eq!(ApiProvider::parse("custom"), Some(ApiProvider::Custom));
+        assert_eq!(ApiProvider::parse("4"), Some(ApiProvider::Custom));
         assert_eq!(ApiProvider::parse("invalid"), None);
     }
 
     #[test]
     fn test_env_var_name() {
-        assert_eq!(ApiProvider::Voyage.env_var_name(), "VOYAGE_API_KEY");
-        assert_eq!(ApiProvider::OpenAI.env_var_name(), "OPENAI_API_KEY");
-        assert_eq!(ApiProvider::Custom.env_var_name(), "EMBEDDING_API_KEY");
+        assert_eq!(ApiProvider::Voyage.env_var_name(), Some("VOYAGE_API_KEY"));
+        assert_eq!(ApiProvider::OpenAI.env_var_name(), Some("OPENAI_API_KEY"));
+        assert_eq!(ApiProvider::Onnx.env_var_name(), None);
+        assert_eq!(
+            ApiProvider::Custom.env_var_name(),
+            Some("EMBEDDING_API_KEY")
+        );
     }
 
     #[test]
@@ -347,6 +457,8 @@ mod tests {
             "sk-short",
             ApiProvider::OpenAI
         )); // too short
+
+        assert!(NeuralWizard::validate_key_format("", ApiProvider::Onnx)); // ONNX always true
 
         assert!(NeuralWizard::validate_key_format(
             "anything",

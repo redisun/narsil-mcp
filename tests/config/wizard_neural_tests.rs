@@ -148,6 +148,28 @@ async fn test_add_api_key_to_vscode_config_new_file() {
 }
 
 #[tokio::test]
+async fn test_add_api_key_to_gemini_cli_config_new_file() {
+    let temp = tempdir().unwrap();
+    let config_dir = temp.path().join(".gemini");
+    fs::create_dir(&config_dir).unwrap();
+    let config_path = config_dir.join("settings.json");
+
+    let wizard = NeuralWizard::new();
+    wizard
+        .add_to_editor_config(&config_path, "VOYAGE_API_KEY", "pa-test123")
+        .await
+        .unwrap();
+
+    let content = fs::read_to_string(&config_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    assert_eq!(
+        parsed["mcpServers"]["narsil-mcp"]["env"]["VOYAGE_API_KEY"],
+        "pa-test123"
+    );
+}
+
+#[tokio::test]
 async fn test_add_api_key_updates_existing_env() {
     let temp = tempdir().unwrap();
     let config_path = temp.path().join("claude_desktop_config.json");
@@ -249,6 +271,10 @@ fn test_get_config_key_for_editor() {
     );
     assert_eq!(
         NeuralWizard::get_config_key_for_editor(EditorType::ClaudeCode),
+        "mcpServers"
+    );
+    assert_eq!(
+        NeuralWizard::get_config_key_for_editor(EditorType::GeminiCLI),
         "mcpServers"
     );
     assert_eq!(
